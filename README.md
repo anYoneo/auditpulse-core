@@ -6,7 +6,7 @@ Lightweight static analysis security scanner for Soroban (Stellar) smart contrac
 
 * **`missingRequireAuth`** (`AP-AUTH-001`): Flags authorization-sensitive operations (token transfers, balance updates, ledger writes) inside functions that omit `env.require_auth()`.
 * **`unwrapUsage`** (`AP-ERROR-001`): Detects explicit `.unwrap()`, `.expect()`, or `panic!()` calls that cause runtime panics; encourages returning `Result<_, ContractError>`.
-* **`missingExtendTtl`** (`AP-STORAGE-001`): Identifies persistent or temporary ledger storage access that lacks an accompanying `.extend_ttl()` call, preventing silent data expiry.
+* **`missingExtendTtl`** (`AP-STORAGE-001`): Identifies persistent or temporary ledger storage access whose own tier is never extended via `.extend_ttl()`, preventing silent data expiry. Access is scoped by storage tier and, where the key is resolvable, by key — so bumping a `temporary` entry no longer hides an unbumped `persistent` one. Ledger access performed inside `macro_rules!` macros is detected too (see *Macro expansions* below).
 * **`uncheckedArithmetic`** (`AP-ARITH-001`): Flags add/subtract/multiply/divide on amount-like values (amounts, balances, supplies, fees) with no checked math (`checked_add`, `saturating_sub`, bounds) that can overflow, underflow, or divide by zero.
 * **`unvalidatedExternalCall`** (`AP-CALL-001`): Flags cross-contract/token operations (transfers, burns, mints, admin changes) with no `require_auth` and no evidence-backed validation: an explicitly checked id (`assert!`/`require!`/comparison) before the call suppresses the finding, an unchecked user-supplied `*_id` argument is reported (medium confidence — naming alone is not a boundary), and a storage-resolved id target is reported at low confidence.
 * **`unprotectedUpgrade`** (`AP-UPG-001`): Flags upgrade/migration/admin-configuration functions (recognized by name) that contain no `require_auth` or admin check.
@@ -78,8 +78,31 @@ never any cross-file dataflow. Known consequences:
   interprocedural data flow.
 * `AP-UPG-001` recognizes admin/upgrade functions by name, so unusual naming
   can evade it.
+* `AP-STORAGE-001` attributes each ledger access to its storage tier and its
+  key, and reports an access that no `extend_ttl` accounts for. Key comparison
+  is source-text based: a key resolved through a helper (`Self::key(&env)`) or
+  read back out of storage is not comparable, so it is treated as covered
+  rather than guessed at. Macro invocation is followed one expansion level
+  deep (see *Macro expansions*), and instance storage shares one TTL for the
+  whole contract, so a single instance bump covers every instance access.
 * Directory scans evaluate each Rust file independently; there is no
   cross-file dataflow analysis.
+
+### Macro expansions
+
+Soroban contracts routinely hide ledger access and TTL handling behind
+`macro_rules!`. AuditPulse does not expand Rust macros — that needs a compiler
+— but it does re-read one expansion level: every `macro_rules!` definition is
+located, and each invocation has its metavariables substituted with the
+arguments the call site passes. Detection is therefore attributed to the
+**call site**, the line a developer can act on. When a body cannot be bound —
+a repetition matcher (`$( ... ),*`), a body that invokes another macro, or a
+metavariable with no matching argument — the invocation is left unreported
+rather than guessed at.
+
+```bash
+node dist/index.js scan contracts/MacroVault.rs
+```
 
 ## Installation
 
